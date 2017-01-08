@@ -279,6 +279,7 @@ def MV : Flag<["-"], "MV">, Group<M_Group>, Flags<[CC1Option]>,
 def Mach : Flag<["-"], "Mach">;
 def O0 : Flag<["-"], "O0">, Group<O_Group>, Flags<[CC1Option]>;
 def O4 : Flag<["-"], "O4">, Group<O_Group>, Flags<[CC1Option]>;
+def OW : Flag<["-"], "OW">, Group<O_Group>, Flags<[CC1Option]>;
 def ObjCXX : Flag<["-"], "ObjC++">, Flags<[DriverOption]>,
   HelpText<"Treat source input files as Objective-C++ inputs">;
 def ObjC : Flag<["-"], "ObjC">, Flags<[DriverOption]>,

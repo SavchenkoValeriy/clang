@@ -731,6 +731,9 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 }
 
 static PassBuilder::OptimizationLevel mapToLevel(const CodeGenOptions &Opts) {
+  if (Opts.OptimizeWithWazuhl)
+    return PassBuilder::OW;
+
   switch (Opts.OptimizationLevel) {
   default:
     llvm_unreachable("Invalid optimization level!");

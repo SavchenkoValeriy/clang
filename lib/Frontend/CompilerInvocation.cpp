@@ -122,6 +122,12 @@ static unsigned getOptimizationLevelSize(ArgList &Args) {
   return 0;
 }
 
+static bool isOptimizingWithWazuhl(ArgList &Args) {
+  if (Arg *A = Args.getLastArg(options::OPT_O_Group))
+    return A->getOption().matches(options::OPT_OW);
+  return false;
+}
+
 static void addDiagnosticArgs(ArgList &Args, OptSpecifier Group,
                               OptSpecifier GroupWithValue,
                               std::vector<std::string> &Diagnostics) {
@@ -461,9 +467,11 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
     }
   }
 
+  Opts.OptimizeWithWazuhl = isOptimizingWithWazuhl(Args);
+
   Opts.ExperimentalNewPassManager = Args.hasFlag(
       OPT_fexperimental_new_pass_manager, OPT_fno_experimental_new_pass_manager,
-      /* Default */ false);
+      /* Default */ false) || Opts.OptimizeWithWazuhl;
 
   if (Arg *A = Args.getLastArg(OPT_fveclib)) {
     StringRef Name = A->getValue();
