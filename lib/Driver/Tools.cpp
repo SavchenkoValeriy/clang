@@ -3557,7 +3557,8 @@ static bool shouldEnableVectorizerAtOLevel(const ArgList &Args, bool isSlpVec) {
         A->getOption().matches(options::OPT_Ofast))
       return true;
 
-    if (A->getOption().matches(options::OPT_O0))
+    if (A->getOption().matches(options::OPT_O0) ||
+        A->getOption().matches(options::OPT_OW))
       return false;
 
     assert(A->getOption().matches(options::OPT_O) && "Must have a -O flag");

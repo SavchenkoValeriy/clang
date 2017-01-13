@@ -85,7 +85,8 @@ static unsigned getOptimizationLevel(ArgList &Args, InputKind IK,
     DefaultOpt = 2;
 
   if (Arg *A = Args.getLastArg(options::OPT_O_Group)) {
-    if (A->getOption().matches(options::OPT_O0))
+    if (A->getOption().matches(options::OPT_O0) ||
+        A->getOption().matches(options::OPT_OW))
       return 0;
 
     if (A->getOption().matches(options::OPT_Ofast))

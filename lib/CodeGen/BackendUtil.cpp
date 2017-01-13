@@ -802,7 +802,8 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
   ModulePassManager MPM;
 
   if (!CodeGenOpts.DisableLLVMPasses) {
-    if (CodeGenOpts.OptimizationLevel == 0) {
+    if (CodeGenOpts.OptimizationLevel == 0 &&
+        !CodeGenOpts.OptimizeWithWazuhl) {
       // Build a minimal pipeline based on the semantics required by Clang,
       // which is just that always inlining occurs.
       MPM.addPass(AlwaysInlinerPass());
