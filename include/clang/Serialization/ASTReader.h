@@ -715,6 +715,8 @@ private:
   /// the consumer eagerly.
   SmallVector<uint64_t, 16> EagerlyDeserializedDecls;
 
+  SmallVector<uint64_t, 16> ModularCodegenDecls;
+
   /// \brief The IDs of all tentative definitions stored in the chain.
   ///
   /// Sema keeps track of all tentative definitions in a TU because it has to
@@ -1186,6 +1188,7 @@ private:
       std::string &SuggestedPredefines, bool ValidateDiagnosticOptions);
   ASTReadResult ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities);
   ASTReadResult ReadExtensionBlock(ModuleFile &F);
+  void ReadModuleOffsetMap(ModuleFile &F) const;
   bool ParseLineTable(ModuleFile &F, const RecordData &Record);
   bool ReadSourceManagerBlock(ModuleFile &F);
   llvm::BitstreamCursor &SLocCursorForID(int ID);
@@ -1268,6 +1271,7 @@ private:
   llvm::iterator_range<PreprocessingRecord::iterator>
   getModulePreprocessedEntities(ModuleFile &Mod) const;
 
+public:
   class ModuleDeclIterator
       : public llvm::iterator_adaptor_base<
             ModuleDeclIterator, const serialization::LocalDeclID *,
@@ -1298,6 +1302,7 @@ private:
   llvm::iterator_range<ModuleDeclIterator>
   getModuleFileLevelDecls(ModuleFile &Mod);
 
+private:
   void PassInterestingDeclsToConsumer();
   void PassInterestingDeclToConsumer(Decl *D);
 
@@ -1318,9 +1323,9 @@ private:
   ///
   /// This routine should only be used for fatal errors that have to
   /// do with non-routine failures (e.g., corrupted AST file).
-  void Error(StringRef Msg);
+  void Error(StringRef Msg) const;
   void Error(unsigned DiagID, StringRef Arg1 = StringRef(),
-             StringRef Arg2 = StringRef());
+             StringRef Arg2 = StringRef()) const;
 
   ASTReader(const ASTReader &) = delete;
   void operator=(const ASTReader &) = delete;
@@ -1631,11 +1636,8 @@ public:
   /// reader.
   unsigned getTotalNumPreprocessedEntities() const {
     unsigned Result = 0;
-    for (ModuleConstIterator I = ModuleMgr.begin(),
-        E = ModuleMgr.end(); I != E; ++I) {
-      Result += (*I)->NumPreprocessedEntities;
-    }
-
+    for (const auto &M : ModuleMgr)
+      Result += M.NumPreprocessedEntities;
     return Result;
   }
 
@@ -1904,10 +1906,10 @@ public:
                                SmallVectorImpl<Decl *> *Decls = nullptr);
 
   /// \brief Report a diagnostic.
-  DiagnosticBuilder Diag(unsigned DiagID);
+  DiagnosticBuilder Diag(unsigned DiagID) const;
 
   /// \brief Report a diagnostic.
-  DiagnosticBuilder Diag(SourceLocation Loc, unsigned DiagID);
+  DiagnosticBuilder Diag(SourceLocation Loc, unsigned DiagID) const;
 
   IdentifierInfo *DecodeIdentifierInfo(serialization::IdentifierID ID);
 
@@ -1967,6 +1969,8 @@ public:
 
   /// \brief Return a descriptor for the corresponding module.
   llvm::Optional<ASTSourceDescriptor> getSourceDescriptor(unsigned ID) override;
+
+  ExtKind hasExternalDefinitions(unsigned ID) override;
 
   /// \brief Retrieve a selector from the given module with its local ID
   /// number.
@@ -2057,6 +2061,8 @@ public:
   /// location space into ours.
   SourceLocation TranslateSourceLocation(ModuleFile &ModuleFile,
                                          SourceLocation Loc) const {
+    if (!ModuleFile.ModuleOffsetMap.empty())
+      ReadModuleOffsetMap(ModuleFile);
     assert(ModuleFile.SLocRemap.find(Loc.getOffset()) !=
                ModuleFile.SLocRemap.end() &&
            "Cannot find offset to remap.");
@@ -2098,8 +2104,7 @@ public:
                                  unsigned &Idx);
 
   /// \brief Reads attributes from the current stream position.
-  void ReadAttributes(ModuleFile &F, AttrVec &Attrs,
-                      const RecordData &Record, unsigned &Idx);
+  void ReadAttributes(ASTRecordReader &Record, AttrVec &Attrs);
 
   /// \brief Reads a statement.
   Stmt *ReadStmt(ModuleFile &F);
@@ -2188,6 +2193,12 @@ public:
 
   /// \brief Loads comments ranges.
   void ReadComments() override;
+
+  /// Visit all the input files of the given module file.
+  void visitInputFiles(serialization::ModuleFile &MF,
+                       bool IncludeSystem, bool Complain,
+          llvm::function_ref<void(const serialization::InputFile &IF,
+                                  bool isSystem)> Visitor);
 
   bool isProcessingUpdateRecords() { return ProcessingUpdateRecords; }
 };
@@ -2283,6 +2294,14 @@ public:
 
   /// \brief Reads a sub-expression operand during statement reading.
   Expr *readSubExpr() { return Reader->ReadSubExpr(); }
+
+  /// \brief Reads a declaration with the given local ID in the given module.
+  ///
+  /// \returns The requested declaration, casted to the given return type.
+  template<typename T>
+  T *GetLocalDeclAs(uint32_t LocalID) {
+    return cast_or_null<T>(Reader->GetLocalDecl(*F, LocalID));
+  }
 
   /// \brief Reads a TemplateArgumentLocInfo appropriate for the
   /// given TemplateArgument kind, advancing Idx.
@@ -2455,7 +2474,7 @@ public:
 
   /// \brief Reads attributes from the current stream position, advancing Idx.
   void readAttributes(AttrVec &Attrs) {
-    return Reader->ReadAttributes(*F, Attrs, Record, Idx);
+    return Reader->ReadAttributes(*this, Attrs);
   }
 
   /// \brief Reads a token out of a record, advancing Idx.

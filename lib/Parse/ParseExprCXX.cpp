@@ -216,7 +216,10 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     SourceLocation EndLoc  = ParseDecltypeSpecifier(DS);
 
     SourceLocation CCLoc;
-    if (!TryConsumeToken(tok::coloncolon, CCLoc)) {
+    // Work around a standard defect: 'decltype(auto)::' is not a
+    // nested-name-specifier.
+    if (DS.getTypeSpecType() == DeclSpec::TST_decltype_auto ||
+        !TryConsumeToken(tok::coloncolon, CCLoc)) {
       AnnotateExistingDecltypeSpecifier(DS, DeclLoc, EndLoc);
       return false;
     }
@@ -310,11 +313,9 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
       // Commit to parsing the template-id.
       TPA.Commit();
       TemplateTy Template;
-      if (TemplateNameKind TNK
-          = Actions.ActOnDependentTemplateName(getCurScope(),
-                                               SS, TemplateKWLoc, TemplateName,
-                                               ObjectType, EnteringContext,
-                                               Template)) {
+      if (TemplateNameKind TNK = Actions.ActOnDependentTemplateName(
+              getCurScope(), SS, TemplateKWLoc, TemplateName, ObjectType,
+              EnteringContext, Template, /*AllowInjectedClassName*/ true)) {
         if (AnnotateTemplateIdToken(Template, TNK, SS, TemplateKWLoc,
                                     TemplateName, false))
           return true;
@@ -509,12 +510,10 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
         Diag(Tok.getLocation(), DiagID)
           << II.getName()
           << FixItHint::CreateInsertion(Tok.getLocation(), "template ");
-        
-        if (TemplateNameKind TNK 
-              = Actions.ActOnDependentTemplateName(getCurScope(), 
-                                                   SS, SourceLocation(),
-                                                   TemplateName, ObjectType,
-                                                   EnteringContext, Template)) {
+
+        if (TemplateNameKind TNK = Actions.ActOnDependentTemplateName(
+                getCurScope(), SS, SourceLocation(), TemplateName, ObjectType,
+                EnteringContext, Template, /*AllowInjectedClassName*/ true)) {
           // Consume the identifier.
           ConsumeToken();
           if (AnnotateTemplateIdToken(Template, TNK, SS, SourceLocation(),
@@ -550,6 +549,7 @@ ExprResult Parser::tryParseCXXIdExpression(CXXScopeSpec &SS, bool isAddressOfOpe
                          /*EnteringContext=*/false,
                          /*AllowDestructorName=*/false,
                          /*AllowConstructorName=*/false,
+                         /*AllowDeductionGuide=*/false,
                          /*ObjectType=*/nullptr, TemplateKWLoc, Name))
     return ExprError();
 
@@ -1643,9 +1643,10 @@ ExprResult Parser::ParseCXXThis() {
 ///         typename-specifier '(' expression-list[opt] ')'
 /// [C++0x] typename-specifier braced-init-list
 ///
+/// In C++1z onwards, the type specifier can also be a template-name.
 ExprResult
 Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
-  Declarator DeclaratorInfo(DS, Declarator::TypeNameContext);
+  Declarator DeclaratorInfo(DS, Declarator::FunctionalCastContext);
   ParsedType TypeRep = Actions.ActOnTypeName(getCurScope(), DeclaratorInfo).get();
 
   assert((Tok.is(tok::l_paren) ||
@@ -2020,9 +2021,11 @@ bool Parser::ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
   case UnqualifiedId::IK_OperatorFunctionId:
   case UnqualifiedId::IK_LiteralOperatorId:
     if (AssumeTemplateId) {
-      TNK = Actions.ActOnDependentTemplateName(getCurScope(), SS, TemplateKWLoc,
-                                               Id, ObjectType, EnteringContext,
-                                               Template);
+      // We defer the injected-class-name checks until we've found whether
+      // this template-id is used to form a nested-name-specifier or not.
+      TNK = Actions.ActOnDependentTemplateName(
+          getCurScope(), SS, TemplateKWLoc, Id, ObjectType, EnteringContext,
+          Template, /*AllowInjectedClassName*/ true);
       if (TNK == TNK_Non_template)
         return true;
     } else {
@@ -2051,10 +2054,9 @@ bool Parser::ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
         Diag(Id.StartLocation, diag::err_missing_dependent_template_keyword)
           << Name
           << FixItHint::CreateInsertion(Id.StartLocation, "template ");
-        TNK = Actions.ActOnDependentTemplateName(getCurScope(),
-                                                 SS, TemplateKWLoc, Id,
-                                                 ObjectType, EnteringContext,
-                                                 Template);
+        TNK = Actions.ActOnDependentTemplateName(
+            getCurScope(), SS, TemplateKWLoc, Id, ObjectType, EnteringContext,
+            Template, /*AllowInjectedClassName*/ true);
         if (TNK == TNK_Non_template)
           return true;              
       }
@@ -2077,10 +2079,9 @@ bool Parser::ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
     bool MemberOfUnknownSpecialization;
     TemplateName.setIdentifier(Name, NameLoc);
     if (ObjectType) {
-      TNK = Actions.ActOnDependentTemplateName(getCurScope(),
-                                               SS, TemplateKWLoc, TemplateName,
-                                               ObjectType, EnteringContext,
-                                               Template);
+      TNK = Actions.ActOnDependentTemplateName(
+          getCurScope(), SS, TemplateKWLoc, TemplateName, ObjectType,
+          EnteringContext, Template, /*AllowInjectedClassName*/ true);
       if (TNK == TNK_Non_template)
         return true;
     } else {
@@ -2155,7 +2156,7 @@ bool Parser::ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
   // Constructor and destructor names.
   TypeResult Type
     = Actions.ActOnTemplateIdType(SS, TemplateKWLoc,
-                                  Template, NameLoc,
+                                  Template, Name, NameLoc,
                                   LAngleLoc, TemplateArgsPtr, RAngleLoc,
                                   /*IsCtorOrDtorName=*/true);
   if (Type.isInvalid())
@@ -2432,6 +2433,8 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 ///
 /// \param AllowConstructorName whether we allow parsing a constructor name.
 ///
+/// \param AllowDeductionGuide whether we allow parsing a deduction guide name.
+///
 /// \param ObjectType if this unqualified-id occurs within a member access
 /// expression, the type of the base object whose member is being accessed.
 ///
@@ -2441,6 +2444,7 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
                                 bool AllowDestructorName,
                                 bool AllowConstructorName,
+                                bool AllowDeductionGuide,
                                 ParsedType ObjectType,
                                 SourceLocation& TemplateKWLoc,
                                 UnqualifiedId &Result) {
@@ -2469,6 +2473,7 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
       return false;
     }
 
+    ParsedTemplateTy TemplateName;
     if (AllowConstructorName && 
         Actions.isCurrentClassName(*Id, getCurScope(), &SS)) {
       // We have parsed a constructor name.
@@ -2477,6 +2482,12 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
                                           /*IsCtorOrDtorName=*/true,
                                           /*NonTrivialTypeSourceInfo=*/true);
       Result.setConstructorName(Ty, IdLoc, IdLoc);
+    } else if (getLangOpts().CPlusPlus1z &&
+               AllowDeductionGuide && SS.isEmpty() &&
+               Actions.isDeductionGuideName(getCurScope(), *Id, IdLoc,
+                                            &TemplateName)) {
+      // We have parsed a template-name naming a deduction guide.
+      Result.setDeductionGuideName(TemplateName, IdLoc);
     } else {
       // We have parsed an identifier.
       Result.setIdentifier(Id, IdLoc);      
@@ -2569,7 +2580,8 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
     if (SS.isEmpty() && Tok.is(tok::kw_decltype)) {
       DeclSpec DS(AttrFactory);
       SourceLocation EndLoc = ParseDecltypeSpecifier(DS);
-      if (ParsedType Type = Actions.getDestructorType(DS, ObjectType)) {
+      if (ParsedType Type =
+              Actions.getDestructorTypeForDecltype(DS, ObjectType)) {
         Result.setDestructorName(TildeLoc, Type, EndLoc);
         return false;
       }

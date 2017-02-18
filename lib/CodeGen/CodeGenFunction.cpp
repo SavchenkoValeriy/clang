@@ -112,9 +112,8 @@ CodeGenFunction::~CodeGenFunction() {
   if (FirstBlockInfo)
     destroyBlockInfos(FirstBlockInfo);
 
-  if (getLangOpts().OpenMP) {
+  if (getLangOpts().OpenMP && CurFn)
     CGM.getOpenMPRuntime().functionFinished(*this);
-  }
 }
 
 CharUnits CodeGenFunction::getNaturalPointeeTypeAlignment(QualType T,
@@ -201,7 +200,8 @@ TypeEvaluationKind CodeGenFunction::getEvaluationKind(QualType type) {
       llvm_unreachable("non-canonical or dependent type in IR-generation");
 
     case Type::Auto:
-      llvm_unreachable("undeduced auto type in IR-generation");
+    case Type::DeducedTemplateSpecialization:
+      llvm_unreachable("undeduced type in IR-generation");
 
     // Various scalar types.
     case Type::Builtin:
@@ -860,8 +860,12 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   // inlining, we just add an attribute to insert a mcount call in backend.
   // The attribute "counting-function" is set to mcount function name which is
   // architecture dependent.
-  if (CGM.getCodeGenOpts().InstrumentForProfiling)
-    Fn->addFnAttr("counting-function", getTarget().getMCountName());
+  if (CGM.getCodeGenOpts().InstrumentForProfiling) {
+    if (CGM.getCodeGenOpts().CallFEntry)
+      Fn->addFnAttr("fentry-call", "true");
+    else
+      Fn->addFnAttr("counting-function", getTarget().getMCountName());
+  }
 
   if (RetTy->isVoidType()) {
     // Void type; nothing to return.
@@ -943,6 +947,15 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
       // FIXME: Should we generate a new load for each use of 'this'?  The
       // fast register allocator would be happier...
       CXXThisValue = CXXABIThisValue;
+    }
+
+    // Null-check the 'this' pointer once per function, if it's available.
+    if (CXXThisValue) {
+      SanitizerSet SkippedChecks;
+      SkippedChecks.set(SanitizerKind::Alignment, true);
+      SkippedChecks.set(SanitizerKind::ObjectSize, true);
+      EmitTypeCheck(TCK_Load, Loc, CXXThisValue, MD->getThisType(getContext()),
+                    /*Alignment=*/CharUnits::Zero(), SkippedChecks);
     }
   }
 
@@ -1085,8 +1098,13 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   if (FD->hasAttr<NoDebugAttr>())
     DebugInfo = nullptr; // disable debug info indefinitely for this function
 
+  // The function might not have a body if we're generating thunks for a
+  // function declaration.
   SourceRange BodyRange;
-  if (Stmt *Body = FD->getBody()) BodyRange = Body->getSourceRange();
+  if (Stmt *Body = FD->getBody())
+    BodyRange = Body->getSourceRange();
+  else
+    BodyRange = FD->getLocation();
   CurEHLocation = BodyRange.getEnd();
 
   // Use the location of the start of the function to determine where
@@ -1900,6 +1918,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
     case Type::Typedef:
     case Type::Decltype:
     case Type::Auto:
+    case Type::DeducedTemplateSpecialization:
       // Stop walking: nothing to do.
       return;
 

@@ -1456,16 +1456,15 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
                     ? types::TY_C
                     : types::TY_CXX;
 
-    arg_iterator it =
-        Args.filtered_begin(options::OPT__SLASH_TC, options::OPT__SLASH_TP);
-    const arg_iterator ie = Args.filtered_end();
-    Arg *Previous = *it++;
+    Arg *Previous = nullptr;
     bool ShowNote = false;
-    while (it != ie) {
-      Diag(clang::diag::warn_drv_overriding_flag_option)
-          << Previous->getSpelling() << (*it)->getSpelling();
-      Previous = *it++;
-      ShowNote = true;
+    for (Arg *A : Args.filtered(options::OPT__SLASH_TC, options::OPT__SLASH_TP)) {
+      if (Previous) {
+        Diag(clang::diag::warn_drv_overriding_flag_option)
+          << Previous->getSpelling() << A->getSpelling();
+        ShowNote = true;
+      }
+      Previous = A;
     }
     if (ShowNote)
       Diag(clang::diag::note_drv_t_option_is_global);
@@ -1582,6 +1581,14 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
       if (!InputType) {
         Diag(clang::diag::err_drv_unknown_language) << A->getValue();
         InputType = types::TY_Object;
+      }
+    } else if (A->getOption().getID() == options::OPT__SLASH_U) {
+      assert(A->getNumValues() == 1 && "The /U option has one value.");
+      StringRef Val = A->getValue(0);
+      if (Val.find_first_of("/\\") != StringRef::npos) {
+        // Warn about e.g. "/Users/me/myfile.c".
+        Diag(diag::warn_slash_u_filename) << Val;
+        Diag(diag::note_use_dashdash);
       }
     }
   }
@@ -3180,7 +3187,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
   const JobAction *JA = cast<JobAction>(A);
   ActionList CollapsedOffloadActions;
 
-  ToolSelector TS(JA, *TC, C, isSaveTempsEnabled(), embedBitcodeInObject());
+  ToolSelector TS(JA, *TC, C, isSaveTempsEnabled(),
+                  embedBitcodeInObject() && !isUsingLTO());
   const Tool *T = TS.getTool(Inputs, CollapsedOffloadActions);
 
   if (!T)

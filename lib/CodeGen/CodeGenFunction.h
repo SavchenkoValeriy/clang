@@ -212,6 +212,13 @@ public:
   /// value. This is invalid iff the function has no return value.
   Address ReturnValue;
 
+  /// Return true if a label was seen in the current scope.
+  bool hasLabelBeenSeenInCurrentScope() const {
+    if (CurLexicalScope)
+      return CurLexicalScope->hasLabels();
+    return !LabelMap.empty();
+  }
+
   /// AllocaInsertPoint - This is an instruction in the entry block before which
   /// we prefer to insert allocas.
   llvm::AssertingVH<llvm::Instruction> AllocaInsertPt;
@@ -618,6 +625,10 @@ public:
 
       if (!Labels.empty())
         rescopeLabels();
+    }
+
+    bool hasLabels() const {
+      return !Labels.empty();
     }
 
     void rescopeLabels();
@@ -2019,6 +2030,9 @@ public:
   llvm::BlockAddress *GetAddrOfLabel(const LabelDecl *L);
   llvm::BasicBlock *GetIndirectGotoBlock();
 
+  /// Check if the null check for \p ObjectPointer can be skipped.
+  static bool CanElideObjectPointerNullCheck(const Expr *ObjectPointer);
+
   /// EmitNullInitialization - Generate code to set a value of the given type to
   /// null, If the type contains data member pointers, they will be initialized
   /// to -1 in accordance with the Itanium C++ ABI.
@@ -2241,7 +2255,7 @@ public:
   /// appropriate size and alignment for an object of type \p Type.
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, llvm::Value *V,
                      QualType Type, CharUnits Alignment = CharUnits::Zero(),
-                     bool SkipNullCheck = false);
+                     SanitizerSet SkippedChecks = SanitizerSet());
 
   /// \brief Emit a check that \p Base points into an array object, which
   /// we can access at index \p Index. \p Accessed should be \c false if we
@@ -2627,7 +2641,9 @@ public:
   /// the end of the directive.
   ///
   /// \param D Directive that has at least one 'reduction' directives.
-  void EmitOMPReductionClauseFinal(const OMPExecutableDirective &D);
+  /// \param ReductionKind The kind of reduction to perform.
+  void EmitOMPReductionClauseFinal(const OMPExecutableDirective &D,
+                                   const OpenMPDirectiveKind ReductionKind);
   /// \brief Emit initial code for linear variables. Creates private copies
   /// and initializes them with the values according to OpenMP standard.
   ///
@@ -2704,13 +2720,16 @@ public:
   void EmitOMPTargetTeamsDistributeSimdDirective(
       const OMPTargetTeamsDistributeSimdDirective &S);
 
-  /// Emit outlined function for the target directive.
-  static std::pair<llvm::Function * /*OutlinedFn*/,
-                   llvm::Constant * /*OutlinedFnID*/>
-  EmitOMPTargetDirectiveOutlinedFunction(CodeGenModule &CGM,
-                                         const OMPTargetDirective &S,
-                                         StringRef ParentName,
-                                         bool IsOffloadEntry);
+  /// Emit device code for the target directive.
+  static void EmitOMPTargetDeviceFunction(CodeGenModule &CGM,
+                                          StringRef ParentName,
+                                          const OMPTargetDirective &S);
+  static void
+  EmitOMPTargetParallelDeviceFunction(CodeGenModule &CGM, StringRef ParentName,
+                                      const OMPTargetParallelDirective &S);
+  static void
+  EmitOMPTargetTeamsDeviceFunction(CodeGenModule &CGM, StringRef ParentName,
+                                   const OMPTargetTeamsDirective &S);
   /// \brief Emit inner loop of the worksharing/simd construct.
   ///
   /// \param S Directive, for which the inner loop must be emitted.
@@ -3092,8 +3111,8 @@ public:
   RValue EmitCUDAKernelCallExpr(const CUDAKernelCallExpr *E,
                                 ReturnValueSlot ReturnValue);
 
-  RValue EmitCUDADevicePrintfCallExpr(const CallExpr *E,
-                                      ReturnValueSlot ReturnValue);
+  RValue EmitNVPTXDevicePrintfCallExpr(const CallExpr *E,
+                                       ReturnValueSlot ReturnValue);
 
   RValue EmitBuiltinExpr(const FunctionDecl *FD,
                          unsigned BuiltinID, const CallExpr *E,

@@ -333,16 +333,13 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
       Diag(Loc, diag::err_binding_cannot_appear_in_own_initializer)
         << D->getDeclName();
     } else {
-      const AutoType *AT = cast<VarDecl>(D)->getType()->getContainedAutoType();
-
       Diag(Loc, diag::err_auto_variable_cannot_appear_in_own_initializer)
-        << D->getDeclName() << (unsigned)AT->getKeyword();
+        << D->getDeclName() << cast<VarDecl>(D)->getType();
     }
     return true;
   }
 
   // See if this is a deleted function.
-  SmallVector<DiagnoseIfAttr *, 4> DiagnoseIfWarnings;
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     if (FD->isDeleted()) {
       auto *Ctor = dyn_cast<CXXConstructorDecl>(FD);
@@ -365,11 +362,8 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     if (getLangOpts().CUDA && !CheckCUDACall(Loc, FD))
       return true;
 
-    if (const DiagnoseIfAttr *A =
-            checkArgIndependentDiagnoseIf(FD, DiagnoseIfWarnings)) {
-      emitDiagnoseIfDiagnostic(Loc, A);
+    if (diagnoseArgIndependentDiagnoseIfAttrs(FD, Loc))
       return true;
-    }
   }
 
   // [OpenMP 4.0], 2.15 declare reduction Directive, Restrictions
@@ -384,9 +378,6 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
     Diag(D->getLocation(), diag::note_entity_declared_at) << D;
     return true;
   }
-
-  for (const auto *W : DiagnoseIfWarnings)
-    emitDiagnoseIfDiagnostic(Loc, W);
 
   DiagnoseAvailabilityOfDecl(*this, D, Loc, UnknownObjCClass,
                              ObjCPropertyAccess);
@@ -3045,6 +3036,9 @@ ExprResult Sema::BuildDeclarationNameExpr(
       break;
     }
 
+    case Decl::CXXDeductionGuide:
+      llvm_unreachable("building reference to deduction guide");
+
     case Decl::MSProperty:
       valueKind = VK_LValue;
       break;
@@ -3976,7 +3970,8 @@ static void captureVariablyModifiedType(ASTContext &Context, QualType T,
       T = cast<DecltypeType>(Ty)->desugar();
       break;
     case Type::Auto:
-      T = cast<AutoType>(Ty)->getDeducedType();
+    case Type::DeducedTemplateSpecialization:
+      T = cast<DeducedType>(Ty)->getDeducedType();
       break;
     case Type::TypeOfExpr:
       T = cast<TypeOfExprType>(Ty)->getUnderlyingExpr()->getType();
@@ -5189,16 +5184,6 @@ static void checkDirectCallValidity(Sema &S, const Expr *Fn,
         << Attr->getCond()->getSourceRange() << Attr->getMessage();
     return;
   }
-
-  SmallVector<DiagnoseIfAttr *, 4> Nonfatal;
-  if (const DiagnoseIfAttr *Attr = S.checkArgDependentDiagnoseIf(
-          Callee, ArgExprs, Nonfatal, /*MissingImplicitThis=*/true)) {
-    S.emitDiagnoseIfDiagnostic(Fn->getLocStart(), Attr);
-    return;
-  }
-
-  for (const auto *W : Nonfatal)
-    S.emitDiagnoseIfDiagnostic(Fn->getLocStart(), W);
 }
 
 /// ActOnCallExpr - Handle a call to Fn with the specified array of arguments.
@@ -5394,6 +5379,15 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
     Diag(Fn->getExprLoc(), diag::err_anyx86_interrupt_called);
     return ExprError();
   }
+
+  // Interrupt handlers don't save off the VFP regs automatically on ARM,
+  // so there's some risk when calling out to non-interrupt handler functions
+  // that the callee might not preserve them. This is easy to diagnose here,
+  // but can be very challenging to debug.
+  if (auto *Caller = getCurFunctionDecl())
+    if (Caller->hasAttr<ARMInterruptAttr>())
+      if (!FDecl->hasAttr<ARMInterruptAttr>())
+        Diag(Fn->getExprLoc(), diag::warn_arm_interrupt_calling_convention);
 
   // Promote the function operand.
   // We special-case function promotion here because we only allow promoting
@@ -7395,7 +7389,13 @@ checkBlockPointerTypesForAssignment(Sema &S, QualType LHSType,
   Sema::AssignConvertType ConvTy = Sema::Compatible;
 
   // For blocks we enforce that qualifiers are identical.
-  if (lhptee.getLocalQualifiers() != rhptee.getLocalQualifiers())
+  Qualifiers LQuals = lhptee.getLocalQualifiers();
+  Qualifiers RQuals = rhptee.getLocalQualifiers();
+  if (S.getLangOpts().OpenCL) {
+    LQuals.removeAddressSpace();
+    RQuals.removeAddressSpace();
+  }
+  if (LQuals != RQuals)
     ConvTy = Sema::CompatiblePointerDiscardsQualifiers;
 
   if (!S.Context.typesAreBlockPointerCompatible(LHSType, RHSType))
@@ -7620,7 +7620,12 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
     // U^ -> void*
     if (RHSType->getAs<BlockPointerType>()) {
       if (LHSPointer->getPointeeType()->isVoidType()) {
-        Kind = CK_BitCast;
+        unsigned AddrSpaceL = LHSPointer->getPointeeType().getAddressSpace();
+        unsigned AddrSpaceR = RHSType->getAs<BlockPointerType>()
+                                  ->getPointeeType()
+                                  .getAddressSpace();
+        Kind =
+            AddrSpaceL != AddrSpaceR ? CK_AddressSpaceConversion : CK_BitCast;
         return Compatible;
       }
     }
@@ -7632,7 +7637,13 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
   if (isa<BlockPointerType>(LHSType)) {
     // U^ -> T^
     if (RHSType->isBlockPointerType()) {
-      Kind = CK_BitCast;
+      unsigned AddrSpaceL = LHSType->getAs<BlockPointerType>()
+                                ->getPointeeType()
+                                .getAddressSpace();
+      unsigned AddrSpaceR = RHSType->getAs<BlockPointerType>()
+                                ->getPointeeType()
+                                .getAddressSpace();
+      Kind = AddrSpaceL != AddrSpaceR ? CK_AddressSpaceConversion : CK_BitCast;
       return checkBlockPointerTypesForAssignment(*this, LHSType, RHSType);
     }
 
@@ -11496,7 +11507,7 @@ ExprResult Sema::BuildBinOp(Scope *S, SourceLocation OpLoc,
       return checkPseudoObjectAssignment(S, OpLoc, Opc, LHSExpr, RHSExpr);
 
     // Don't resolve overloads if the other type is overloadable.
-    if (pty->getKind() == BuiltinType::Overload) {
+    if (getLangOpts().CPlusPlus && pty->getKind() == BuiltinType::Overload) {
       // We can't actually test that if we still have a placeholder,
       // though.  Fortunately, none of the exceptions we see in that
       // code below are valid when the LHS is an overload set.  Note
@@ -11521,17 +11532,16 @@ ExprResult Sema::BuildBinOp(Scope *S, SourceLocation OpLoc,
     // An overload in the RHS can potentially be resolved by the type
     // being assigned to.
     if (Opc == BO_Assign && pty->getKind() == BuiltinType::Overload) {
-      if (LHSExpr->isTypeDependent() || RHSExpr->isTypeDependent())
-        return BuildOverloadedBinOp(*this, S, OpLoc, Opc, LHSExpr, RHSExpr);
-
-      if (LHSExpr->getType()->isOverloadableType())
+      if (getLangOpts().CPlusPlus &&
+          (LHSExpr->isTypeDependent() || RHSExpr->isTypeDependent() ||
+           LHSExpr->getType()->isOverloadableType()))
         return BuildOverloadedBinOp(*this, S, OpLoc, Opc, LHSExpr, RHSExpr);
 
       return CreateBuiltinBinOp(OpLoc, Opc, LHSExpr, RHSExpr);
     }
 
     // Don't resolve overloads if the other type is overloadable.
-    if (pty->getKind() == BuiltinType::Overload &&
+    if (getLangOpts().CPlusPlus && pty->getKind() == BuiltinType::Overload &&
         LHSExpr->getType()->isOverloadableType())
       return BuildOverloadedBinOp(*this, S, OpLoc, Opc, LHSExpr, RHSExpr);
 
@@ -11677,7 +11687,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
                  Context.getLangOpts().OpenCLVersion < 120) {
         // OpenCL v1.1 6.3.h: The logical operator not (!) does not
         // operate on scalar float types.
-        if (!resultType->isIntegerType())
+        if (!resultType->isIntegerType() && !resultType->isPointerType())
           return ExprError(Diag(OpLoc, diag::err_typecheck_unary_expr)
                            << resultType << Input.get()->getSourceRange());
       }
@@ -13558,6 +13568,13 @@ static bool isVariableCapturable(CapturingScopeInfo *CSI, VarDecl *Var,
     }
     return false;
   }
+  // OpenCL v2.0 s6.12.5: Blocks cannot reference/capture other blocks
+  if (S.getLangOpts().OpenCL && IsBlock &&
+      Var->getType()->isBlockPointerType()) {
+    if (Diagnose)
+      S.Diag(Loc, diag::err_opencl_block_ref_block);
+    return false;
+  }
 
   return true;
 }
@@ -13595,16 +13612,55 @@ static bool captureInBlock(BlockScopeInfo *BSI, VarDecl *Var,
   }
 
   // Warn about implicitly autoreleasing indirect parameters captured by blocks.
-  if (auto *PT = dyn_cast<PointerType>(CaptureType)) {
+  if (const auto *PT = CaptureType->getAs<PointerType>()) {
+    // This function finds out whether there is an AttributedType of kind
+    // attr_objc_ownership in Ty. The existence of AttributedType of kind
+    // attr_objc_ownership implies __autoreleasing was explicitly specified
+    // rather than being added implicitly by the compiler.
+    auto IsObjCOwnershipAttributedType = [](QualType Ty) {
+      while (const auto *AttrTy = Ty->getAs<AttributedType>()) {
+        if (AttrTy->getAttrKind() == AttributedType::attr_objc_ownership)
+          return true;
+
+        // Peel off AttributedTypes that are not of kind objc_ownership.
+        Ty = AttrTy->getModifiedType();
+      }
+
+      return false;
+    };
+
     QualType PointeeTy = PT->getPointeeType();
-    if (isa<ObjCObjectPointerType>(PointeeTy.getCanonicalType()) &&
+
+    if (PointeeTy->getAs<ObjCObjectPointerType>() &&
         PointeeTy.getObjCLifetime() == Qualifiers::OCL_Autoreleasing &&
-        !isa<AttributedType>(PointeeTy)) {
+        !IsObjCOwnershipAttributedType(PointeeTy)) {
       if (BuildAndDiagnose) {
         SourceLocation VarLoc = Var->getLocation();
         S.Diag(Loc, diag::warn_block_capture_autoreleasing);
-        S.Diag(VarLoc, diag::note_declare_parameter_autoreleasing) <<
-            FixItHint::CreateInsertion(VarLoc, "__autoreleasing");
+        {
+          auto AddAutoreleaseNote =
+              S.Diag(VarLoc, diag::note_declare_parameter_autoreleasing);
+          // Provide a fix-it for the '__autoreleasing' keyword at the
+          // appropriate location in the variable's type.
+          if (const auto *TSI = Var->getTypeSourceInfo()) {
+            PointerTypeLoc PTL =
+                TSI->getTypeLoc().getAsAdjusted<PointerTypeLoc>();
+            if (PTL) {
+              SourceLocation Loc = PTL.getPointeeLoc().getEndLoc();
+              Loc = Lexer::getLocForEndOfToken(Loc, 0, S.getSourceManager(),
+                                               S.getLangOpts());
+              if (Loc.isValid()) {
+                StringRef CharAtLoc = Lexer::getSourceText(
+                    CharSourceRange::getCharRange(Loc, Loc.getLocWithOffset(1)),
+                    S.getSourceManager(), S.getLangOpts());
+                AddAutoreleaseNote << FixItHint::CreateInsertion(
+                    Loc, CharAtLoc.empty() || !isWhitespace(CharAtLoc[0])
+                             ? " __autoreleasing "
+                             : " __autoreleasing");
+              }
+            }
+          }
+        }
         S.Diag(VarLoc, diag::note_declare_parameter_strong);
       }
     }

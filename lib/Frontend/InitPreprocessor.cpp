@@ -522,6 +522,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_structured_bindings", "201606");
     Builder.defineMacro("__cpp_nontype_template_args", "201411");
     Builder.defineMacro("__cpp_fold_expressions", "201603");
+    // FIXME: This is not yet listed in SD-6.
+    Builder.defineMacro("__cpp_deduction_guides", "201611");
   }
   if (LangOpts.AlignedAllocation)
     Builder.defineMacro("__cpp_aligned_new", "201606");
@@ -593,9 +595,6 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
         Builder.defineMacro("OBJC_ZEROCOST_EXCEPTIONS");
     }
 
-    Builder.defineMacro("__OBJC_BOOL_IS_BOOL",
-                        Twine(TI.useSignedCharForObjCBool() ? "0" : "1"));
-
     if (LangOpts.getGC() != LangOptions::NonGC)
       Builder.defineMacro("__OBJC_GC__");
 
@@ -625,6 +624,11 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("IBInspectable", "");
     Builder.defineMacro("IB_DESIGNABLE", "");
   }
+
+  // Define a macro that describes the Objective-C boolean type even for C
+  // and C++ since BOOL can be used from non Objective-C code.
+  Builder.defineMacro("__OBJC_BOOL_IS_BOOL",
+                      Twine(TI.useSignedCharForObjCBool() ? "0" : "1"));
 
   if (LangOpts.CPlusPlus)
     InitializeCPlusPlusFeatureTestMacros(LangOpts, Builder);

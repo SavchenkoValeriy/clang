@@ -86,6 +86,7 @@ namespace clang {
     void VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D);
     void VisitDeclaratorDecl(DeclaratorDecl *D);
     void VisitFunctionDecl(FunctionDecl *D);
+    void VisitCXXDeductionGuideDecl(CXXDeductionGuideDecl *D);
     void VisitCXXMethodDecl(CXXMethodDecl *D);
     void VisitCXXConstructorDecl(CXXConstructorDecl *D);
     void VisitCXXDestructorDecl(CXXDestructorDecl *D);
@@ -368,6 +369,7 @@ void ASTDeclWriter::VisitTypedefNameDecl(TypedefNameDecl *D) {
   Record.push_back(D->isModed());
   if (D->isModed())
     Record.AddTypeRef(D->getUnderlyingType());
+  Record.AddDeclRef(D->getAnonDeclWithTypedefName(false));
 }
 
 void ASTDeclWriter::VisitTypedefDecl(TypedefDecl *D) {
@@ -519,6 +521,7 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   Record.push_back((int)D->SClass); // FIXME: stable encoding
   Record.push_back(D->IsInline);
   Record.push_back(D->IsInlineSpecified);
+  Record.push_back(D->IsExplicitSpecified);
   Record.push_back(D->IsVirtualAsWritten);
   Record.push_back(D->IsPure);
   Record.push_back(D->HasInheritedPrototype);
@@ -605,6 +608,11 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   for (auto P : D->parameters())
     Record.AddDeclRef(P);
   Code = serialization::DECL_FUNCTION;
+}
+
+void ASTDeclWriter::VisitCXXDeductionGuideDecl(CXXDeductionGuideDecl *D) {
+  VisitFunctionDecl(D);
+  Code = serialization::DECL_CXX_DEDUCTION_GUIDE;
 }
 
 void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
@@ -1268,8 +1276,6 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 
   VisitCXXMethodDecl(D);
 
-  Record.push_back(D->IsExplicitSpecified);
-
   Code = D->isInheritingConstructor()
              ? serialization::DECL_CXX_INHERITED_CONSTRUCTOR
              : serialization::DECL_CXX_CONSTRUCTOR;
@@ -1285,7 +1291,6 @@ void ASTDeclWriter::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
 
 void ASTDeclWriter::VisitCXXConversionDecl(CXXConversionDecl *D) {
   VisitCXXMethodDecl(D);
-  Record.push_back(D->IsExplicitSpecified);
   Code = serialization::DECL_CXX_CONVERSION;
 }
 
@@ -2023,6 +2028,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // StorageClass
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Inline
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InlineSpecified
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ExplicitSpecified
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // VirtualAsWritten
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Pure
   Abv->Add(BitCodeAbbrevOp(0));                         // HasInheritedProto
@@ -2152,7 +2158,7 @@ void ASTWriter::WriteDeclAbbrevs() {
 /// relatively painless since they would presumably only do it for top-level
 /// decls.
 static bool isRequiredDecl(const Decl *D, ASTContext &Context,
-                           bool WritingModule) {
+                           bool WritingModule, bool ModularCode) {
   // An ObjCMethodDecl is never considered as "required" because its
   // implementation container always is.
 
@@ -2168,7 +2174,7 @@ static bool isRequiredDecl(const Decl *D, ASTContext &Context,
     return false;
   }
 
-  return Context.DeclMustBeEmitted(D);
+  return Context.DeclMustBeEmitted(D, ModularCode);
 }
 
 void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
@@ -2212,8 +2218,11 @@ void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
 
   // Note declarations that should be deserialized eagerly so that we can add
   // them to a record in the AST file later.
-  if (isRequiredDecl(D, Context, WritingModule))
+  if (isRequiredDecl(D, Context, WritingModule, false))
     EagerlyDeserializedDecls.push_back(ID);
+  else if (Context.getLangOpts().ModularCodegen && WritingModule &&
+           isRequiredDecl(D, Context, true, true))
+    ModularCodegenDecls.push_back(ID);
 }
 
 void ASTRecordWriter::AddFunctionDefinition(const FunctionDecl *FD) {

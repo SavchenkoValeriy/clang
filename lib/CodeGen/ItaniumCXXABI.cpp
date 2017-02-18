@@ -2015,10 +2015,11 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
 
     // The ABI says: "It is suggested that it be emitted in the same COMDAT
     // group as the associated data object." In practice, this doesn't work for
-    // non-ELF object formats, so only do it for ELF.
+    // non-ELF and non-Wasm object formats, so only do it for ELF and Wasm.
     llvm::Comdat *C = var->getComdat();
     if (!D.isLocalVarDecl() && C &&
-        CGM.getTarget().getTriple().isOSBinFormatELF()) {
+        (CGM.getTarget().getTriple().isOSBinFormatELF() ||
+         CGM.getTarget().getTriple().isOSBinFormatWasm())) {
       guard->setComdat(C);
       // An inline variable's guard function is run from the per-TU
       // initialization function, not via a dedicated global ctor function, so
@@ -2161,7 +2162,9 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
 
   // Create a variable that binds the atexit to this shared object.
   llvm::Constant *handle =
-    CGF.CGM.CreateRuntimeVariable(CGF.Int8Ty, "__dso_handle");
+      CGF.CGM.CreateRuntimeVariable(CGF.Int8Ty, "__dso_handle");
+  auto *GV = cast<llvm::GlobalValue>(handle->stripPointerCasts());
+  GV->setVisibility(llvm::GlobalValue::HiddenVisibility);
 
   llvm::Value *args[] = {
     llvm::ConstantExpr::getBitCast(dtor, dtorTy),
@@ -2634,7 +2637,6 @@ static bool TypeInfoIsInStandardLibrary(const BuiltinType *Ty) {
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:
     case BuiltinType::OCLQueue:
-    case BuiltinType::OCLNDRange:
     case BuiltinType::OCLReserveID:
       return false;
 
@@ -2814,7 +2816,8 @@ void ItaniumRTTIBuilder::BuildVTablePointer(const Type *Ty) {
     llvm_unreachable("References shouldn't get here");
 
   case Type::Auto:
-    llvm_unreachable("Undeduced auto type shouldn't get here");
+  case Type::DeducedTemplateSpecialization:
+    llvm_unreachable("Undeduced type shouldn't get here");
 
   case Type::Pipe:
     llvm_unreachable("Pipe types shouldn't get here");
@@ -3044,7 +3047,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force,
     llvm_unreachable("References shouldn't get here");
 
   case Type::Auto:
-    llvm_unreachable("Undeduced auto type shouldn't get here");
+  case Type::DeducedTemplateSpecialization:
+    llvm_unreachable("Undeduced type shouldn't get here");
 
   case Type::Pipe:
     llvm_unreachable("Pipe type shouldn't get here");
@@ -3534,8 +3538,9 @@ static StructorCodegen getCodegenToUse(CodeGenModule &CGM,
     return StructorCodegen::RAUW;
 
   if (llvm::GlobalValue::isWeakForLinker(Linkage)) {
-    // Only ELF supports COMDATs with arbitrary names (C5/D5).
-    if (CGM.getTarget().getTriple().isOSBinFormatELF())
+    // Only ELF and wasm support COMDATs with arbitrary names (C5/D5).
+    if (CGM.getTarget().getTriple().isOSBinFormatELF() ||
+        CGM.getTarget().getTriple().isOSBinFormatWasm())
       return StructorCodegen::COMDAT;
     return StructorCodegen::Emit;
   }
