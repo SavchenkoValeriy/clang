@@ -936,6 +936,8 @@ def finline : Flag<["-"], "finline">, Group<clang_ignored_f_Group>;
 def fexperimental_new_pass_manager : Flag<["-"], "fexperimental-new-pass-manager">,
   Group<f_clang_Group>, Flags<[CC1Option]>,
   HelpText<"Enables an experimental new pass manager in LLVM.">;
+def ftrain_wazuhl : Flag<["-"], "ftrain-wazuhl">, Group<f_clang_Group>,
+  Flags<[CC1Option, HelpHidden]>, HelpText<"Enables Wazuhl training">;
 def finput_charset_EQ : Joined<["-"], "finput-charset=">, Group<f_Group>;
 def fexec_charset_EQ : Joined<["-"], "fexec-charset=">, Group<f_Group>;
 def finstrument_functions : Flag<["-"], "finstrument-functions">, Group<f_Group>, Flags<[CC1Option]>,
@@ -1116,6 +1118,8 @@ def fno_inline : Flag<["-"], "fno-inline">, Group<f_clang_Group>, Flags<[CC1Opti
 def fno_experimental_new_pass_manager : Flag<["-"], "fno-experimental-new-pass-manager">,
   Group<f_clang_Group>, Flags<[CC1Option]>,
   HelpText<"Disables an experimental new pass manager in LLVM.">;
+def fno_train_wazuhl : Flag<["-"], "fno-train-wazuhl">, Group<f_clang_Group>,
+  Flags<[CC1Option, HelpHidden]>, HelpText<"Disables Wazuhl training">;
 def fveclib : Joined<["-"], "fveclib=">, Group<f_Group>, Flags<[CC1Option]>,
     HelpText<"Use the given vector functions library">;
 def fno_lax_vector_conversions : Flag<["-"], "fno-lax-vector-conversions">, Group<f_Group>,

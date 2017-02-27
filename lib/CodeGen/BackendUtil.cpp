@@ -793,11 +793,14 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
   if (CodeGenOpts.hasProfileIRUse())
     PGOOpt.ProfileUseFile = CodeGenOpts.ProfileInstrumentUsePath;
 
+  PGOOpt.TrainWazuhl = CodeGenOpts.TrainWazuhl;
+
   // Only pass a PGO options struct if -fprofile-generate or
   // -fprofile-use were passed on the cmdline.
   PassBuilder PB(TM.get(),
     (PGOOpt.RunProfileGen ||
-      !PGOOpt.ProfileUseFile.empty()) ?
+     !PGOOpt.ProfileUseFile.empty() ||
+     PGOOpt.TrainWazuhl) ?
         Optional<PGOOptions>(PGOOpt) : None);
 
   LoopAnalysisManager LAM;
