@@ -469,7 +469,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   }
 
   Opts.OptimizeWithWazuhl = isOptimizingWithWazuhl(Args);
-  Opts.TrainWazuhl        = Args.hasFlag(OPT_ftrain_wazuhl, OPT_fno_train_wazuhl);
+  Opts.TrainWazuhl =
+      Args.hasFlag(OPT_ftrain_wazuhl, OPT_fno_train_wazuhl, false);
 
   Opts.ExperimentalNewPassManager = Args.hasFlag(
       OPT_fexperimental_new_pass_manager, OPT_fno_experimental_new_pass_manager,

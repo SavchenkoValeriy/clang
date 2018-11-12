@@ -6029,6 +6029,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fexperimental_new_pass_manager,
                   options::OPT_fno_experimental_new_pass_manager);
 
+  Args.AddLastArg(CmdArgs, options::OPT_ftrain_wazuhl,
+                  options::OPT_fno_train_wazuhl);
+
   ObjCRuntime objcRuntime = AddObjCRuntimeArgs(Args, CmdArgs, rewriteKind);
 
   // -fobjc-dispatch-method is only relevant with the nonfragile-abi, and
