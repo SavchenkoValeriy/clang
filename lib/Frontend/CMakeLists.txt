@@ -5,6 +5,7 @@ set(LLVM_LINK_COMPONENTS
   Option
   ProfileData
   Support
+  Wazuhl
   )
 
 set(optional_deps intrinsics_gen)

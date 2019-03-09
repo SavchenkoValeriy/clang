@@ -43,6 +43,7 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Wazuhl/NormalizedTimer.h"
 #include <atomic>
 #include <memory>
 #include <sys/stat.h>
@@ -475,6 +476,10 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ExperimentalNewPassManager = Args.hasFlag(
       OPT_fexperimental_new_pass_manager, OPT_fno_experimental_new_pass_manager,
       /* Default */ false) || Opts.OptimizeWithWazuhl;
+  if (Opts.OptimizeWithWazuhl) {
+    llvm::wazuhl::NormalizedTimer::init();
+  }
+
 
   if (Arg *A = Args.getLastArg(OPT_fveclib)) {
     StringRef Name = A->getValue();
